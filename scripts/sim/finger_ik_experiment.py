@@ -71,8 +71,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--viewer-step",
         type=float,
-        default=20.0,
-        help="Viewer update frequency in Hz (default: 20).",
+        default=60.0,
+        help="Viewer update frequency in Hz (default: 60).",
     )
     parser.add_argument(
         "--viewer-step-delay",
@@ -199,10 +199,11 @@ def _set_target_visibility(
     model: mujoco.MjModel, cfgs: dict[str, FingerConfig], active_finger: str | None
 ) -> None:
     for finger, cfg in cfgs.items():
-        if cfg.target_geom_id is None:
-            continue
         alpha = 0.95 if active_finger is not None and finger == active_finger else 0.0
-        model.geom_rgba[cfg.target_geom_id, 3] = alpha
+        if cfg.target_geom_id is not None:
+            model.geom_rgba[cfg.target_geom_id, 3] = alpha
+        if cfg.target_site_id is not None:
+            model.site_rgba[cfg.target_site_id, 3] = alpha
 
 
 def reset_to_initial(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -379,6 +380,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
 
             for _ in range(args.trials):
                 reset_to_initial(model, data)
+
                 target, _ = sample_reachable_target(model, data, cfg, rng, args.joint_margin)
 
                 if cfg.target_mocap_id is not None:
@@ -409,7 +411,10 @@ def run_experiment(args: argparse.Namespace) -> dict:
                 success_count += int(ok)
 
                 if viewer_ctx is not None or writer is not None:
-                    hold_steps = max(1, int(args.viewer_trial_hold / 0.01))
+                    if viewer_delay > 0.0:
+                        hold_steps = max(1, int(math.ceil(args.viewer_trial_hold / viewer_delay)))
+                    else:
+                        hold_steps = 1
                     for _ in range(hold_steps):
                         _sync_and_record()
 
