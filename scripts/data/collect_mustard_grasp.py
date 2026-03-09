@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +24,10 @@ import numpy as np
 from mujoco import viewer
 
 from env import allegro_hand_mjcf
+from env.allegro_hand_trajectories import (
+    POWER_GRASP_CLOSE_QPOS,
+    POWER_GRASP_PRESHAPE_QPOS,
+)
 from env.viewer_utils import set_default_hand_camera
 
 MUSTARD_JOINT_NAME = f"{allegro_hand_mjcf.MUSTARD_PREFIX}006_mustard_bottle"
@@ -25,52 +37,6 @@ MUSTARD_LOCAL_OFFSET = np.array([0.10, 0.00, 0.02], dtype=float)
 MUSTARD_HORIZONTAL_QUAT = np.array([0.5, 0.5, 0.5, -0.5], dtype=float)
 FINGER_KEYS = ("ff", "mf", "rf", "th")
 FINGER_CONTACT_SEGMENTS = ("distal", "tip")
-
-POWER_GRASP_CLOSE_QPOS = np.array(
-    [
-        0.0920,
-        1.6100,
-        1.5500,
-        0.9000,
-        -0.0139,
-        1.6100,
-        1.5500,
-        0.9000,
-        -0.0885,
-        1.6100,
-        1.5500,
-        0.9000,
-        1.2679,
-        0.9546,
-        1.5218,
-        0.6767,
-    ],
-    dtype=float,
-)
-
-# Thumb-opposition pre-shape: rotate thumb inward first, then full close.
-POWER_GRASP_PRESHAPE_QPOS = np.array(
-    [
-        0.0920,
-        0.0000,
-        0.0000,
-        0.0000,
-        -0.0139,
-        0.0000,
-        0.0000,
-        0.0000,
-        -0.0885,
-        0.0000,
-        0.0000,
-        0.0000,
-        1.2679,
-        0.4296,
-        0.8370,
-        0.3722,
-    ],
-    dtype=float,
-)
-
 
 @dataclass(frozen=True)
 class MustardConfig:

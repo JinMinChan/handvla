@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 import argparse
 from datetime import datetime
 import json
@@ -165,6 +173,7 @@ def _compute_stats(raw_episode_ds, action_dim: int) -> dict[str, Any]:
 
 
 def _make_train_iterator(tf, builder, stats: dict[str, Any], args: argparse.Namespace):
+    window_size = int(args.window_size)
     action_horizon = int(args.action_horizon)
     image_size = int(args.image_size)
 
@@ -188,19 +197,37 @@ def _make_train_iterator(tf, builder, stats: dict[str, Any], args: argparse.Name
         action = (action - action_mean) / action_std
         proprio = (proprio - proprio_mean) / proprio_std
 
-        total = tf.shape(action)[0] - action_horizon + 1
-        total = tf.maximum(total, 0)
+        traj_len = tf.shape(action)[0]
+        total = traj_len
         idxs = tf.range(total)
 
         def make_sample(i):
-            action_chunk = action[i : i + action_horizon]  # [horizon, action_dim]
-            action_chunk = tf.expand_dims(action_chunk, axis=0)  # [window=1, horizon, action_dim]
-            action_pad_mask = tf.ones_like(action_chunk, dtype=tf.bool)
+            history_offsets = tf.range(-window_size + 1, 1)
+            history_indices = i + history_offsets  # [window]
+            timestep_pad_mask = history_indices >= 0
+            history_indices = tf.maximum(history_indices, 0)
+
+            obs_images = tf.gather(images, history_indices)  # [window, H, W, C]
+            obs_proprio = tf.gather(proprio, history_indices)  # [window, proprio_dim]
+
+            horizon_offsets = tf.range(action_horizon)[None, :]  # [1, horizon]
+            action_indices = history_indices[:, None] + horizon_offsets  # [window, horizon]
+            action_valid = action_indices < traj_len
+            action_indices = tf.minimum(action_indices, traj_len - 1)
+            action_chunk = tf.gather(action, action_indices)  # [window, horizon, action_dim]
+            action_pad_mask = tf.logical_and(
+                timestep_pad_mask[:, None],
+                action_valid,
+            )
+            action_pad_mask = tf.broadcast_to(
+                action_pad_mask[:, :, None],
+                tf.shape(action_chunk),
+            )
             return {
                 "observation": {
-                    "image_primary": tf.expand_dims(images[i], axis=0),
-                    "proprio": tf.expand_dims(proprio[i], axis=0),
-                    "timestep_pad_mask": tf.ones((1,), dtype=tf.bool),
+                    "image_primary": obs_images,
+                    "proprio": obs_proprio,
+                    "timestep_pad_mask": timestep_pad_mask,
                 },
                 "action": action_chunk,
                 "action_pad_mask": action_pad_mask,
@@ -223,8 +250,8 @@ def _make_train_iterator(tf, builder, stats: dict[str, Any], args: argparse.Name
 
 def main() -> None:
     args = parse_args()
-    if args.window_size != 1:
-        raise SystemExit("This script currently supports --window-size 1 only.")
+    if args.window_size <= 0:
+        raise SystemExit("--window-size must be >= 1.")
     if args.action_horizon <= 0:
         raise SystemExit("--action-horizon must be >= 1.")
 
@@ -298,8 +325,9 @@ def main() -> None:
     train_iter = map(process_batch_fn, train_iter)
     example_batch = next(train_iter)
 
-    print("[model] adapting config for single image + state + custom action head...")
+    print("[model] adapting config for image+state history + custom action head...")
     config = pretrained_model.config
+    config["window_size"] = int(args.window_size)
     obs_tokenizers = config["model"]["observation_tokenizers"]
     if "wrist" in obs_tokenizers:
         del obs_tokenizers["wrist"]

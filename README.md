@@ -1,15 +1,33 @@
 # handvla
 
-Allegro hand 기반 MuJoCo 실험 환경에서 VLA action interface를 비교하기 위한 저장소입니다.
-현재 메인 비교 축은 아래 3개입니다.
+MuJoCo 기반 Allegro hand / Franka+Allegro manipulation 실험 저장소입니다.
+핵심 목적은 VLA에서 hand action interface를 어떻게 설계할지 비교하고, 최종적으로 `Franka TCP 6D + hand synergy 4D` 형태의 end-to-end 제어까지 검증하는 것입니다.
 
-- `full_joint16` (16-DoF 직접 제어)
-- `tcp12` (4 fingertip TCP xyz)
-- `joint-synergy kD` (16-DoF를 저차원 latent로 압축)
+## Current Scope
 
-## Quick Start
+현재 레포에서 바로 다룰 수 있는 메인 흐름은 3개입니다.
 
-### 1) 환경 설치
+- Allegro hand-only 시뮬레이션과 fingertip IK 검증
+- mustard grasp용 hand low-dimensional action 비교 (`full_joint`, `tcp12`, `joint-synergy`)
+- Franka + Allegro + mustard pick-and-lift end-to-end VLA (`10D = arm TCP 6D + hand synergy 4D`)
+
+현재 확인된 end-to-end 성공 설정은 아래입니다.
+
+- model: `models/pickandlift_arm_tcp_hand_octo_continue_from_step300_20260308/run_260308_180929/checkpoint_000250`
+- rollout setting: `--policy-repeat 10`
+- result: `3/3 success`
+- references:
+  - `codex/logs/json/pickandlift_arm_tcp_hand_octo_continue_step250_repeat10_eval3_20260308.json`
+  - `codex/logs/videos/pickandlift_arm_tcp_hand_octo_continue_step250_repeat10_demo_20260308.mp4`
+
+## Environments
+
+기본 실행 환경:
+
+- simulation / data tools: `conda activate handvla`
+- Octo fine-tuning: `conda activate octoketi`
+
+설치:
 
 ```bash
 cd /home/minchan/Downloads/workspace/handvla
@@ -19,220 +37,256 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-Octo 파인튜닝은 현재 `octoketi` 환경 사용:
-
-```bash
-conda activate octoketi
-```
-
-### 2) 손 시뮬레이터 실행
-
-```bash
-conda activate handvla
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/sim/run_allegro_hand.py --side right
-```
-
-1920x1080 녹화:
-
-```bash
-PYTHONPATH=. python scripts/sim/run_allegro_hand.py --side right --record --record-width 1920 --record-height 1080 --record-fps 60
-```
-
-### 3) IK 실험
-
-```bash
-PYTHONPATH=. python scripts/sim/finger_ik_experiment.py --side right --trials 3 --seed 7
-```
-
 ## Repository Layout
 
 ```text
 handvla/
-  env/                      # MuJoCo MJCF, assets, camera utils
+  env/            MuJoCo MJCF, robot assets, viewer utilities
   scripts/
-    sim/                    # hand viewer, finger IK
-    data/                   # mustard collect, dataset collect, OXE convert
-    train/                  # Octo finetune
-    eval/                   # rollout/evaluation
-    research/               # synergy basis/build/convert
-  docs/                     # 연구 설계/발표용 문서
-  tools/                    # 업로드 전 정리 스크립트
-  dataset/                  # 실험 데이터 (git ignore)
-  models/                   # 학습 모델 (git ignore)
-  codex/logs/               # 로그/대표 영상
+    sim/          simulation launchers and IK experiments
+    data/         dataset collection and raw->OXE conversion
+    research/     synergy basis construction and raw conversion helpers
+    train/        Octo fine-tuning scripts
+    eval/         rollout / checkpoint evaluation scripts
+  docs/           project design and presentation notes
+  dataset/        generated local datasets (gitignored)
+  models/         generated local checkpoints (gitignored)
+  codex/logs/     representative logs, images, videos (gitignored)
 ```
 
-## Script Map (역할)
+## Quick Start
 
-### Simulation
+### Allegro hand viewer
 
-- `scripts/sim/run_allegro_hand.py`
-  - Allegro hand viewer + slider 제어 + 녹화
-- `scripts/sim/finger_ik_experiment.py`
-  - 손가락별 랜덤 TCP 타겟 IK 도달성 테스트
+```bash
+conda activate handvla
+python scripts/sim/run_allegro_hand.py --side right
+```
 
-### Data
+1080p recording:
+
+```bash
+python scripts/sim/run_allegro_hand.py \
+  --side right \
+  --record --record-width 1920 --record-height 1080 --record-fps 60
+```
+
+### Finger IK experiment
+
+```bash
+conda activate handvla
+python scripts/sim/finger_ik_experiment.py --side right --trials 3 --seed 7
+```
+
+### Franka + Allegro + mustard scene
+
+```bash
+conda activate handvla
+python scripts/sim/run_franka_allegro_mustard.py --side right
+```
+
+Headless smoke test:
+
+```bash
+python scripts/sim/run_franka_allegro_mustard.py --no-viewer --steps 200
+```
+
+Pre-grasp IK verification:
+
+```bash
+python scripts/sim/run_franka_pregrasp_ik.py --side right
+```
+
+## Main Pipelines
+
+### 1. Hand-only low-dimensional action study
+
+Main scripts:
 
 - `scripts/data/collect_mustard_grasp.py`
-  - 단일 mustard grasp 실행/검증용
 - `scripts/data/collect_mustard_grasp_dataset.py`
-  - 성공 에피소드만 raw NPZ로 누적 저장
-- `scripts/data/convert_mustard_raw_to_oxe.py`
-  - raw NPZ -> OXE(RLDS/TFDS)
-
-### Train / Eval
-
-- `scripts/train/finetune_mustard_octo.py`
-  - Octo-base 파인튜닝
-- `scripts/eval/rollout_mustard_octo.py`
-  - 기본 rollout 평가 (full_joint/tcp12/auto)
-- `scripts/eval/rollout_mustard_octo_synergy.py`
-  - synergy 전용 rollout
-- `scripts/eval/rollout_mustard_octo_tcp12.py`
-  - tcp12 디버그 전용(legacy)
-
-### Research Utilities
-
 - `scripts/research/build_joint_synergy_basis.py`
-  - full_joint 데이터로 PCA basis 생성
 - `scripts/research/convert_full_joint_raw_to_synergy_raw.py`
-  - full_joint raw -> synergy raw 변환
+- `scripts/train/finetune_mustard_octo.py`
+- `scripts/eval/rollout_mustard_octo.py`
+- `scripts/eval/rollout_mustard_octo_synergy.py`
+- `scripts/eval/rollout_mustard_octo_tcp12.py`
 
-## End-to-End Pipeline
-
-### A. Dataset Collection (full_joint 예시)
+Typical flow:
 
 ```bash
 conda activate handvla
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/data/collect_mustard_grasp_dataset.py \
-  --action-interface joint16 \
+python scripts/data/collect_mustard_grasp_dataset.py \
   --target-episodes 100 \
   --no-viewer \
-  --out-dir dataset/mustard_grasp_full_joint_diverse
-```
+  --out-dir dataset/mustard_grasp_raw
 
-### B. OXE 변환
-
-```bash
-PYTHONPATH=. python scripts/data/convert_mustard_raw_to_oxe.py \
-  --raw-dir dataset/mustard_grasp_full_joint_diverse/raw \
-  --out-dir dataset/mustard_grasp_oxe_full_joint_diverse
-```
-
-### C. Octo 파인튜닝
-
-```bash
-conda activate octoketi
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/train/finetune_mustard_octo.py \
-  --data-dir dataset/mustard_grasp_oxe_full_joint_diverse \
-  --dataset-name mustard_grasp_oxe \
-  --action-dim 16 \
-  --save-dir models/mustard_octo_overfit_full_joint_diverse
-```
-
-### D. Rollout 평가
-
-```bash
-conda activate handvla
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/eval/rollout_mustard_octo.py \
-  --model-path models/mustard_octo_overfit_full_joint_diverse/run_*/final_model \
-  --action-interface joint16 \
-  --episodes 10
-```
-
-## Synergy-k4 Pipeline
-
-### 1) PCA basis 생성
-
-```bash
-PYTHONPATH=. python scripts/research/build_joint_synergy_basis.py \
-  --raw-dir dataset/mustard_grasp_full_joint_diverse/raw \
+python scripts/research/build_joint_synergy_basis.py \
+  --raw-dir dataset/mustard_grasp_raw/raw \
   --k-list 4 \
-  --out-dir dataset/synergy_basis_diverse_k236
+  --out-dir dataset/synergy_basis
+
+python scripts/research/convert_full_joint_raw_to_synergy_raw.py \
+  --in-raw-dir dataset/mustard_grasp_raw/raw \
+  --basis-path dataset/synergy_basis/full_joint_pca_k4.npz \
+  --out-dir dataset/mustard_grasp_synergy_k4
+
+python scripts/data/convert_mustard_raw_to_oxe.py \
+  --raw-dir dataset/mustard_grasp_synergy_k4/raw \
+  --out-dir dataset/mustard_grasp_synergy_k4_oxe
 ```
 
-### 2) raw 변환 (16 -> k)
-
-```bash
-PYTHONPATH=. python scripts/research/convert_full_joint_raw_to_synergy_raw.py \
-  --in-raw-dir dataset/mustard_grasp_full_joint_diverse/raw \
-  --basis-path dataset/synergy_basis_diverse_k236/full_joint_pca_k4.npz \
-  --out-dir dataset/mustard_grasp_synergy_k4_diverse_k236
-```
-
-### 3) OXE 변환
-
-```bash
-PYTHONPATH=. python scripts/data/convert_mustard_raw_to_oxe.py \
-  --raw-dir dataset/mustard_grasp_synergy_k4_diverse_k236/raw \
-  --out-dir dataset/mustard_grasp_oxe_synergy_k4_diverse_k236
-```
-
-### 4) 파인튜닝 (k=4)
+Training:
 
 ```bash
 conda activate octoketi
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/train/finetune_mustard_octo.py \
-  --data-dir dataset/mustard_grasp_oxe_synergy_k4_diverse_k236 \
+python scripts/train/finetune_mustard_octo.py \
+  --data-dir dataset/mustard_grasp_synergy_k4_oxe \
   --dataset-name mustard_grasp_oxe \
   --action-dim 4 \
-  --save-dir models/mustard_octo_overfit_synergy_k4_selected
+  --window-size 2 \
+  --save-dir models/mustard_octo_synergy_k4
 ```
 
-### 5) synergy rollout
+Evaluation:
 
 ```bash
 conda activate handvla
-cd /home/minchan/Downloads/workspace/handvla
-PYTHONPATH=. python scripts/eval/rollout_mustard_octo_synergy.py \
-  --model-path models/mustard_octo_overfit_synergy_k4_selected/run_*/final_model \
-  --basis-path dataset/synergy_basis_diverse_k236/full_joint_pca_k4.npz \
-  --episodes 10
+python scripts/eval/rollout_mustard_octo_synergy.py \
+  --model-path models/mustard_octo_synergy_k4/run_*/best_model \
+  --basis-path dataset/synergy_basis/full_joint_pca_k4.npz \
+  --episodes 3
 ```
 
-## Current kept artifacts (minimal)
+### 2. Pick-and-lift hand-only baseline
 
-- Dataset
-  - `dataset/mustard_grasp_full_joint_diverse`
-  - `dataset/mustard_grasp_oxe_full_joint_diverse`
-  - `dataset/mustard_grasp_synergy_k4_diverse_k236`
-  - `dataset/mustard_grasp_oxe_synergy_k4_diverse_k236`
-  - `dataset/synergy_basis*`
-- Models
-  - `models/mustard_octo_overfit_full_joint_diverse`
-  - `models/mustard_octo_overfit_synergy_k4_selected`
-- Representative videos
-  - `codex/logs/full_joint_diverse_rollout_demo.mp4`
-  - `codex/logs/tcp12_cmd_next_palm_local_rollout_demo_20260303.mp4`
-  - `codex/logs/synergy_k4_selected_rollout_demo_20260304.mp4`
-  - `codex/logs/finger_ik_260219_164246.mp4`
+Arm은 IK로 고정하고 hand만 VLA로 학습하는 기준선입니다.
 
-## Pre-push Cleanup
+Main scripts:
 
-실행 전 dry-run 권장:
+- `scripts/data/collect_pickandlift_rlds.py`
+- `scripts/research/build_pickandlift_hand_synergy_basis.py`
+- `scripts/research/convert_pickandlift_raw_to_hand_synergy_raw.py`
+- `scripts/train/finetune_mustard_octo.py`
+- `scripts/eval/rollout_pickandlift_hand_octo.py`
+
+### 3. Pick-and-lift end-to-end arm+hand VLA
+
+최종 action space:
+
+- arm: TCP `x, y, z, roll, pitch, yaw`
+- hand: synergy latent `k=4`
+- total: `10D`
+
+Main scripts:
+
+- `scripts/data/collect_pickandlift_rlds.py`
+- `scripts/data/collect_pickandlift_corrective_rlds.py`
+- `scripts/research/build_pickandlift_hand_synergy_basis.py`
+- `scripts/research/convert_pickandlift_raw_to_arm_tcp_hand_synergy_raw.py`
+- `scripts/train/finetune_pickandlift_arm_tcp_hand_octo.py`
+- `scripts/eval/rollout_pickandlift_arm_tcp_hand_octo.py`
+- `scripts/eval/sweep_pickandlift_arm_tcp_hand_checkpoints.py`
+
+Raw collection:
 
 ```bash
-bash tools/cleanup_before_push.sh
-bash tools/prune_logs_representative.sh
+conda activate handvla
+python scripts/data/collect_pickandlift_rlds.py \
+  --target-episodes 20 \
+  --max-attempts 25 \
+  --capture-hz 5 \
+  --no-viewer \
+  --out-dir dataset/franka_pickandlift_object6d_low2e_owrap_20_fast5hz
 ```
 
-실제 삭제:
+Build hand synergy basis:
 
 ```bash
-bash tools/cleanup_before_push.sh --execute
-bash tools/prune_logs_representative.sh --execute
+python scripts/research/build_pickandlift_hand_synergy_basis.py \
+  --raw-dir dataset/franka_pickandlift_object6d_low2e_owrap_20_fast5hz/raw \
+  --k 4 \
+  --out-dir dataset/pickandlift_synergy_basis
+```
+
+Convert to `tcp10` raw:
+
+```bash
+python scripts/research/convert_pickandlift_raw_to_arm_tcp_hand_synergy_raw.py \
+  --raw-dir dataset/franka_pickandlift_object6d_low2e_owrap_20_fast5hz/raw \
+  --basis-path dataset/pickandlift_synergy_basis/pickandlift_hand_pca_k4.npz \
+  --out-dir dataset/franka_pickandlift_arm_tcp_hand_synergy_k4 \
+  --instruction "grasp the mustard bottle"
+```
+
+Convert to OXE:
+
+```bash
+python scripts/data/convert_mustard_raw_to_oxe.py \
+  --raw-dir dataset/franka_pickandlift_arm_tcp_hand_synergy_k4/raw \
+  --out-dir dataset/franka_pickandlift_arm_tcp_hand_synergy_k4_oxe \
+  --language-default "grasp the mustard bottle"
+```
+
+Train:
+
+```bash
+conda activate octoketi
+python scripts/train/finetune_pickandlift_arm_tcp_hand_octo.py \
+  --data-dir dataset/franka_pickandlift_arm_tcp_hand_synergy_k4_oxe \
+  --dataset-name mustard_grasp_oxe \
+  --action-dim 10 \
+  --window-size 4 \
+  --save-dir models/pickandlift_arm_tcp_hand_octo
+```
+
+Rollout:
+
+```bash
+conda activate handvla
+python scripts/eval/rollout_pickandlift_arm_tcp_hand_octo.py \
+  --model-path models/pickandlift_arm_tcp_hand_octo/run_*/best_model \
+  --basis-path dataset/pickandlift_synergy_basis/pickandlift_hand_pca_k4.npz \
+  --episodes 3 \
+  --no-viewer
+```
+
+Current successful deployment setting:
+
+```bash
+conda activate handvla
+python scripts/eval/rollout_pickandlift_arm_tcp_hand_octo.py \
+  --model-path models/pickandlift_arm_tcp_hand_octo_continue_from_step300_20260308/run_260308_180929/checkpoint_000250 \
+  --basis-path dataset/pickandlift_synergy_basis_owrap20_20260306/pickandlift_hand_pca_k4.npz \
+  --episodes 3 \
+  --no-viewer \
+  --seed 0 \
+  --policy-repeat 10 \
+  --save-json codex/logs/json/pickandlift_arm_tcp_hand_octo_continue_step250_repeat10_eval3_20260308.json
+```
+
+Recording:
+
+```bash
+python scripts/eval/rollout_pickandlift_arm_tcp_hand_octo.py \
+  --model-path models/pickandlift_arm_tcp_hand_octo_continue_from_step300_20260308/run_260308_180929/checkpoint_000250 \
+  --basis-path dataset/pickandlift_synergy_basis_owrap20_20260306/pickandlift_hand_pca_k4.npz \
+  --episodes 1 \
+  --no-viewer \
+  --seed 0 \
+  --policy-repeat 10 \
+  --record --record-width 1920 --record-height 1080 --record-fps 60 \
+  --record-path codex/logs/videos/pickandlift_arm_tcp_hand_octo_continue_step250_repeat10_demo_20260308.mp4
 ```
 
 ## Notes
 
-- 기본 실행 커맨드는 `PYTHONPATH=.`를 붙여 실행하세요.
-- `dataset/`, `models/`는 `.gitignore`에 포함되어 있어 기본적으로 커밋되지 않습니다.
-- 연구 설계 문서는 `docs/`를 참고하세요:
-  - `docs/iccas-action-interface-plan.md`
-  - `docs/joint-synergy-kD.md`
-  - `docs/experiment-flow-for-presentation.md`
+- 이 저장소는 `PYTHONPATH=.` 없이 실행하도록 스크립트를 정리했습니다.
+- `dataset/`, `models/`, `codex/`는 로컬 생성물이며 git에는 포함하지 않습니다.
+- 현재 end-to-end 10D 결과에서 `policy-repeat`는 rollout 시 정책 호출 주기를 뜻합니다. `control_hz=100`에서 `policy-repeat 10`이면 policy는 초당 10번 호출됩니다.
+
+## Documents
+
+- `docs/joint-synergy-kD.md`
+- `docs/experiment-flow-for-presentation.md`
+- `docs/iccas-action-interface-plan.md`
