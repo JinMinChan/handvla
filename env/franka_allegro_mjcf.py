@@ -154,6 +154,13 @@ def load(
         _attach_mustard(scene, env_dir)
     if add_frame_axes:
         _add_frame_axes(scene, f"franka/allegro_{side}/palm", "palm", axis_len=0.12, axis_radius=0.004)
+        _add_frame_axes(
+            scene,
+            f"franka/allegro_{side}/ff_distal",
+            "ff_distal",
+            axis_len=0.05,
+            axis_radius=0.0025,
+        )
         if add_mustard:
             _add_frame_axes(
                 scene,

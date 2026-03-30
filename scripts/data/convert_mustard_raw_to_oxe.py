@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Inspect raw files and print stats without building TFDS.",
     )
+    parser.add_argument(
+        "--goal-image-source",
+        choices=("last_frame", "first_frame"),
+        default="last_frame",
+        help="Episode-level goal image source for optional goal-conditioned training.",
+    )
     return parser.parse_args()
 
 
@@ -83,7 +89,7 @@ def _to_scalar_string(value) -> str:
     return str(value)
 
 
-def _load_episode(path: Path, language_default: str) -> dict:
+def _load_episode(path: Path, language_default: str, goal_image_source: str = "last_frame") -> dict:
     data = np.load(path, allow_pickle=True)
     images = np.asarray(data["images"], dtype=np.uint8)
     states = np.asarray(data["state"], dtype=np.float32)
@@ -104,6 +110,10 @@ def _load_episode(path: Path, language_default: str) -> dict:
         if "object_qpos" in data
         else np.zeros((7,), dtype=np.float32)
     )
+    if images.shape[0] > 0:
+        goal_image_primary = images[0].copy() if goal_image_source == "first_frame" else images[-1].copy()
+    else:
+        goal_image_primary = np.zeros((1, 1, 3), dtype=np.uint8)
 
     return {
         "images": images,
@@ -112,6 +122,7 @@ def _load_episode(path: Path, language_default: str) -> dict:
         "success": success,
         "language_instruction": language,
         "object_qpos": object_qpos,
+        "goal_image_primary": goal_image_primary,
     }
 
 
@@ -167,6 +178,7 @@ def _build_tfds(args: argparse.Namespace, selected_files: list[Path], schema: di
     try:
         import tensorflow as tf  # noqa: F401
         import tensorflow_datasets as tfds
+        from tensorflow_datasets.rlds import rlds_base
     except ImportError as exc:  # pragma: no cover
         raise SystemExit(
             "TensorFlow + TensorFlow Datasets are required.\n"
@@ -185,42 +197,45 @@ def _build_tfds(args: argparse.Namespace, selected_files: list[Path], schema: di
         RELEASE_NOTES = {dataset_version: "Initial mustard grasp OXE/RLDS export."}
 
         def _info(self) -> tfds.core.DatasetInfo:
-            return tfds.core.DatasetInfo(
-                builder=self,
-                description=(
-                    "Mustard fixed-air grasp dataset in OXE-style RLDS format "
-                    "(image_primary + state + action)."
-                ),
-                features=tfds.features.FeaturesDict(
-                    {
-                        "steps": tfds.features.Sequence(
-                            {
-                                "observation": tfds.features.FeaturesDict(
-                                    {
-                                        "image_primary": tfds.features.Image(
-                                            shape=(image_h, image_w, image_c), dtype=np.uint8
-                                        ),
-                                        "state": tfds.features.Tensor(
-                                            shape=(state_dim,), dtype=np.float32
-                                        ),
-                                    }
-                                ),
-                                "action": tfds.features.Tensor(
-                                    shape=(action_dim,), dtype=np.float32
-                                ),
-                                "reward": tfds.features.Scalar(dtype=np.float32),
-                                "discount": tfds.features.Scalar(dtype=np.float32),
-                                "is_first": tfds.features.Scalar(dtype=np.bool_),
-                                "is_last": tfds.features.Scalar(dtype=np.bool_),
-                                "is_terminal": tfds.features.Scalar(dtype=np.bool_),
-                            }
-                        ),
+            description = (
+                "Mustard fixed-air grasp dataset in OXE-style RLDS format "
+                "(image_primary + state + action)."
+            )
+            return rlds_base.build_info(
+                rlds_base.DatasetConfig(
+                    name="mustard_grasp_oxe",
+                    version=dataset_version,
+                    overall_description=description,
+                    observation_info=tfds.features.FeaturesDict(
+                        {
+                            "image_primary": tfds.features.Image(
+                                shape=(image_h, image_w, image_c), dtype=np.uint8
+                            ),
+                            "state": tfds.features.Tensor(
+                                shape=(state_dim,), dtype=np.float32
+                            ),
+                        }
+                    ),
+                    action_info=tfds.features.Tensor(
+                        shape=(action_dim,), dtype=np.float32
+                    ),
+                    reward_info=tfds.features.Scalar(dtype=np.float32),
+                    discount_info=tfds.features.Scalar(dtype=np.float32),
+                    step_metadata_info={
                         "language_instruction": tfds.features.Text(),
+                    },
+                    episode_metadata_info={
                         "success": tfds.features.Scalar(dtype=np.bool_),
-                        "object_qpos": tfds.features.Tensor(shape=(7,), dtype=np.float32),
+                        "object_qpos": tfds.features.Tensor(
+                            shape=(7,), dtype=np.float32
+                        ),
+                        "goal_image_primary": tfds.features.Image(
+                            shape=(image_h, image_w, image_c), dtype=np.uint8
+                        ),
                         "source_file": tfds.features.Text(),
-                    }
+                    },
                 ),
+                self,
             )
 
         def _split_generators(self, dl_manager):  # noqa: ANN001
@@ -230,38 +245,42 @@ def _build_tfds(args: argparse.Namespace, selected_files: list[Path], schema: di
         def _generate_examples(self):
             episode_id = 0
             for path in selected_files:
-                ep = _load_episode(path, language_default=language_default)
+                ep = _load_episode(
+                    path,
+                    language_default=language_default,
+                    goal_image_source=args.goal_image_source,
+                )
                 steps_count = int(ep["images"].shape[0])
                 if steps_count == 0:
                     continue
                 rewards = np.zeros((steps_count,), dtype=np.float32)
                 rewards[-1] = 1.0 if ep["success"] else 0.0
-                steps = {
-                    "observation": {
-                        "image_primary": ep["images"],
-                        "state": ep["states"],
-                    },
-                    "action": ep["actions"],
-                    "reward": rewards,
-                    "discount": np.ones((steps_count,), dtype=np.float32),
-                    "is_first": np.asarray(
-                        [True] + [False] * (steps_count - 1), dtype=np.bool_
-                    ),
-                    "is_last": np.asarray(
-                        [False] * (steps_count - 1) + [True], dtype=np.bool_
-                    ),
-                    "is_terminal": np.asarray(
-                        [False] * (steps_count - 1) + [True], dtype=np.bool_
-                    ),
-                }
+                steps = []
+                for i in range(steps_count):
+                    steps.append(
+                        {
+                            "observation": {
+                                "image_primary": ep["images"][i],
+                                "state": ep["states"][i],
+                            },
+                            "action": ep["actions"][i],
+                            "reward": rewards[i],
+                            "discount": np.float32(1.0),
+                            "is_first": np.bool_(i == 0),
+                            "is_last": np.bool_(i == steps_count - 1),
+                            "is_terminal": np.bool_(i == steps_count - 1),
+                            "language_instruction": ep["language_instruction"],
+                        }
+                    )
                 key = f"episode_{episode_id:05d}"
-                yield key, {
+                example = {
                     "steps": steps,
-                    "language_instruction": ep["language_instruction"],
                     "success": np.bool_(ep["success"]),
                     "object_qpos": ep["object_qpos"],
+                    "goal_image_primary": ep["goal_image_primary"],
                     "source_file": str(path.relative_to(raw_dir_path)),
                 }
+                yield key, example
                 episode_id += 1
 
     out_dir = Path(args.out_dir).resolve()
@@ -290,7 +309,11 @@ def main() -> None:
 
     selected_files: list[Path] = []
     for path in files:
-        ep = _load_episode(path, language_default=args.language_default)
+        ep = _load_episode(
+            path,
+            language_default=args.language_default,
+            goal_image_source=args.goal_image_source,
+        )
         if args.only_success and not ep["success"]:
             continue
         selected_files.append(path)
