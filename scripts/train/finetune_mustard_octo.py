@@ -362,8 +362,8 @@ def main() -> None:
         from octo.utils.train_utils import TrainState, merge_params, process_text
     except ImportError as exc:
         raise SystemExit(
-            "Missing Octo/JAX dependencies. Use an environment with octo+jax installed "
-            "(e.g. conda activate octoketi)."
+            "Missing Octo/JAX dependencies. Use the unified handvla environment "
+            "with Octo/JAX installed (e.g. conda activate handvla)."
         ) from exc
 
     if args.disable_jit:

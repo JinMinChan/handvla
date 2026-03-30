@@ -101,6 +101,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--record-fps", type=int, default=5)
     parser.add_argument("--record-dir", type=str, default="codex/logs/videos")
+    parser.add_argument(
+        "--record-path",
+        type=str,
+        default="",
+        help="Optional explicit mp4 path. If empty, a timestamped path under --record-dir is used.",
+    )
+    parser.add_argument(
+        "--record-all-episodes",
+        action="store_true",
+        help="Record all episodes into one combined video instead of only episode 0.",
+    )
     parser.add_argument("--save-json", type=str, default="")
     return parser.parse_args()
 
@@ -153,6 +164,13 @@ def _init_writer(path: Path, fps: int) -> imageio.Writer:
         pixelformat="yuv420p",
         macro_block_size=None,
     )
+
+
+def _resolve_record_path(args: argparse.Namespace) -> Path:
+    if args.record_path:
+        return Path(args.record_path)
+    video_name = f"mustard_intent_octo_official_{args.task}_{datetime.now().strftime('%y%m%d_%H%M%S')}.mp4"
+    return Path(args.record_dir) / video_name
 
 
 def _build_task(model: OctoModel, args: argparse.Namespace, env: MustardIntentGymEnv):
@@ -271,6 +289,11 @@ def run_eval(args: argparse.Namespace) -> dict:
         "episodes": [],
     }
 
+    combined_writer = None
+    combined_record_path = _resolve_record_path(args) if args.record and args.record_all_episodes else None
+    if combined_record_path is not None:
+        combined_writer = _init_writer(combined_record_path, args.record_fps)
+
     for ep in range(int(args.episodes)):
         base_env = MustardIntentGymEnv(env_cfg)
         env = NormalizeProprio(base_env, {"proprio": proprio_stats} if proprio_stats is not None else {})
@@ -301,9 +324,15 @@ def run_eval(args: argparse.Namespace) -> dict:
         task = _build_task(model, args, base_env)
         obs, _ = env.reset(seed=args.seed + ep)
         writer = None
-        if args.record and ep == 0:
-            video_name = f"mustard_intent_octo_official_{args.task}_{datetime.now().strftime('%y%m%d_%H%M%S')}.mp4"
-            writer = _init_writer(Path(args.record_dir) / video_name, args.record_fps)
+        if combined_writer is not None:
+            writer = combined_writer
+            if ep > 0:
+                separator = np.zeros_like(base_env.render())
+                for _ in range(max(1, int(args.record_fps // 2))):
+                    writer.append_data(separator)
+            writer.append_data(base_env.render())
+        elif args.record and ep == 0:
+            writer = _init_writer(_resolve_record_path(args), args.record_fps)
             writer.append_data(base_env.render())
 
         terminated = False
@@ -329,13 +358,16 @@ def run_eval(args: argparse.Namespace) -> dict:
             if step >= int(args.max_policy_steps) + 2:
                 truncated = True
 
-        if writer is not None:
+        if writer is not None and writer is not combined_writer:
             writer.close()
 
         ep_summary = base_env.get_episode_summary()
         ep_summary["episode"] = ep
         summary["episodes"].append(ep_summary)
         base_env.close()
+
+    if combined_writer is not None:
+        combined_writer.close()
 
     total = len(summary["episodes"])
     success = sum(int(ep["success"]) for ep in summary["episodes"])

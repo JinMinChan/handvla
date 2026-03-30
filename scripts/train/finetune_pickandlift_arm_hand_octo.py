@@ -305,7 +305,8 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit(
             "Missing Octo/JAX dependencies. "
-            "Use an environment with octo+jax installed (e.g., conda activate octoketi)."
+            "Use the unified handvla environment with Octo/JAX installed "
+            "(e.g., conda activate handvla)."
         ) from exc
 
     initialize_compilation_cache()

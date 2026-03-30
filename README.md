@@ -17,6 +17,10 @@
     - thumb 포함 full wrap을 만들고
     - 충분히 lift까지 하지만
     - 현재 evaluator의 strict hold continuity 조건을 아직 만족하지 못합니다
+  - 현재 reference `10`-episode jitter eval 기준:
+    - strict success: `0/10`
+    - practical success: `2/10 = 20%`
+  - 남은 실패의 큰 비중은 **object 정면이 아니라 옆으로 치우친 pre-grasp alignment**에서 시작됩니다
 
 이 레포는 이 상태를 숨기지 않고 그대로 기록합니다.
 즉, 이 결과는 **가짜 성공도 아니고**, **strict benchmark success도 아닙니다**.
@@ -53,15 +57,15 @@
 
 ## 2. 환경 설명
 
-기본적으로 환경은 두 개를 씁니다.
+현재 운영 기준 환경은 **`handvla` 하나**입니다.
 
-### `handvla`
 사용 용도:
 - MuJoCo simulation
 - 데이터 수집
 - raw dataset 가공
 - basis 생성
-- 일부 rollout / debug
+- official Octo fine-tuning
+- official Octo rollout / interactive debug
 
 설치 예시:
 
@@ -73,14 +77,10 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-### `octoketi`
-사용 용도:
-- Octo fine-tuning
-- official Octo rollout evaluation
-
-즉 현재 운영 기준은:
-- simulation / data tools: `conda activate handvla`
-- Octo training / official Octo eval: `conda activate octoketi`
+추가 메모:
+- 이 레포는 현재 `handvla`에서 JAX/TensorFlow/Octo 경로까지 한 번에 쓰는 구성을 기준으로 유지합니다.
+- 예전 실험 기록에 나오는 `octoketi`는 **과거 분리 운영 흔적**이고, 현재 기준 사용 환경은 아닙니다.
+- `requirements.txt`는 기본 시뮬레이션/유틸 패키지 설치 예시입니다. 현재 운영 중인 `handvla`는 여기에 더해 CUDA JAX, TensorFlow, Flax, Optax, TFDS, Transformers, 그리고 Octo-compatible stack이 같이 들어 있는 상태를 기준으로 합니다.
 
 ### 로컬 경로 메모
 - 로컬에서 별도 Octo source 경로를 쓰고 싶으면 `.octo_src_path`를 둘 수 있습니다.
@@ -430,6 +430,90 @@ strict success 조건:
 
 이 구분은 매우 중요합니다.
 
+### 4-10. hand intent / phase auxiliary idea도 있었지만, 최신 모델에는 아직 미적용
+우리는 wrap 연구 중간에 **보조 네트워크를 따로 학습해서 phase / close-entry 신호를 만들어 쓰는 아이디어**도 실험했습니다.
+
+구상은 이랬습니다.
+
+1. observation history를 보고
+2. 작은 auxiliary 모델이 `close-entry` 또는 `progress`에 해당하는 scalar를 예측
+3. 그 신호로 hand correction을 gating
+4. 나중에는 이 구조를 `hand intent` 예측으로 확장
+
+즉 현재 task에서의 단순 버전은:
+- `obs -> aux_close/progress`
+- `aux signal -> hand correction on/off`
+
+장기 버전은:
+- `obs -> intent/phase embedding`
+- `intent/phase -> policy conditioning 또는 residual expert routing`
+
+입니다.
+
+이 방향을 완전히 버린 것은 아닙니다.
+다만 **현재 최신 wrap500 practical-success candidate를 만든 메인라인 모델에는 이 구조를 넣지 않았습니다.**
+
+이유는 두 가지였습니다.
+
+1. 먼저 **pure official Octo baseline**이 clean collector + wrap500 데이터에서 어디까지 가는지 보고 싶었음
+2. 최신 failure는 이미 `close-entry` 자체보다 **post-grasp hold continuity**에 더 가까워졌음
+
+즉 현재 최신 모델은:
+- auxiliary hand-intent head 없음
+- pure official Octo fine-tune + temporal rollout selection
+
+으로 나온 결과이고,
+hand intent / phase auxiliary는 **다음 단계 확장 카드**로 문서화해 두는 상태입니다.
+
+### 4-11. 현재 practical success rate와 실패의 주 원인
+현재 reference 모델에 대해 같은 deployment 조건으로 `10`-episode jitter eval을 다시 보면:
+
+- 평가 설정:
+  - `wrapper = temporal`
+  - `conditioning = language_goal`
+  - `policy_repeat = 20`
+  - `spawn_jitter_xy = 0.02`
+  - `spawn_yaw_jitter_deg = 10`
+- raw summary:
+  - `codex/logs/json/wrap500_temporalcontinue_bestroll_eval10_jitter_20260330.json`
+- strict metric:
+  - `0 / 10 = 0%`
+
+하지만 우리가 near-success 영상에서 사실상 성공으로 보고 싶은 기준:
+
+- `reached = true`
+- `best_fingers`에 `ff,mf,rf,th`가 모두 포함
+- `object_dz_max >= 0.08`
+
+으로 다시 계산하면:
+
+- practical summary:
+  - `codex/logs/json/wrap500_temporalcontinue_bestroll_eval10_jitter_practical_20260330.json`
+- practical success:
+  - `2 / 10 = 20%`
+- successful episodes:
+  - `2`
+  - `3`
+
+이 `20%`는 "조금 완화해서 억지로 만든 숫자"라기보다,
+현재 모델이 실제로는 이미:
+- front approach
+- full wrap
+- meaningful lift
+를 일부 episode에서 달성하고 있다는 뜻입니다.
+
+반대로 남은 실패의 주 원인은 단순히 hand가 못 닫혀서가 아니라,
+**grasp를 시도하는 시작 위치가 bottle 중앙선보다 옆으로 치우친 lateral pre-grasp alignment failure**가 크다는 점입니다.
+
+즉 현재 메인 병목은:
+- pure close failure
+- pure hold failure
+
+둘 중 하나만이 아니라,
+먼저 **front-aligned approach를 더 안정화해야 하는 문제**와
+그 다음의 **post-grasp hold continuity 문제**
+가 함께 남아 있다고 보는 게 맞습니다.
+
 ---
 
 ## 5. 사용법
@@ -455,7 +539,7 @@ bash codex/run_wrap500_collect_and_train_20260324.sh
 
 ### 5-2. official Octo 학습
 ```bash
-conda activate octoketi
+conda activate handvla
 python scripts/train/finetune_mustard_octo.py \
   --data-dir dataset/mustard_intent_wrap500_mix_k4_20260324_oxe \
   --save-dir models/mustard_octo_official_wrap500_mix_k4_20260324 \
@@ -467,7 +551,7 @@ python scripts/train/finetune_mustard_octo.py \
 
 ### 5-3. validation-based continuation
 ```bash
-conda activate octoketi
+conda activate handvla
 python scripts/train/finetune_mustard_octo.py \
   --pretrained-path models/mustard_octo_official_wrap500_mix_k4_20260324/run_260324_182938/best_train_model \
   --data-dir dataset/mustard_intent_wrap500_mix_k4_20260324_oxe \
@@ -486,7 +570,7 @@ bash codex/run_wrap500_continue_temporalrollout_20260325.sh
 
 ### 5-5. official Octo rollout 평가
 ```bash
-conda activate octoketi
+conda activate handvla
 python scripts/eval/rollout_mustard_intent_octo_official.py \
   --model-path models/mustard_octo_official_wrap500_mix_k4_temporalcontinue_20260325/run_260325_161632/best_rollout_model \
   --basis-path dataset/mustard_intent_wrap500_mix_k4_basis_20260324/mustard_intent_hand_pca_k4.npz \
@@ -505,7 +589,7 @@ python scripts/eval/rollout_mustard_intent_octo_official.py \
 
 ### 5-6. practical-success candidate 영상 재현
 ```bash
-conda activate octoketi
+conda activate handvla
 python scripts/eval/rollout_mustard_intent_octo_official.py \
   --model-path models/mustard_octo_official_wrap500_mix_k4_temporalcontinue_20260325/run_260325_161632/best_rollout_model \
   --basis-path dataset/mustard_intent_wrap500_mix_k4_basis_20260324/mustard_intent_hand_pca_k4.npz \
@@ -529,7 +613,7 @@ python scripts/eval/rollout_mustard_intent_octo_official.py \
 
 ### 5-7. interactive 디버그
 ```bash
-conda activate octoketi
+conda activate handvla
 python scripts/eval/run_mustard_intent_octo_interactive.py
 ```
 
